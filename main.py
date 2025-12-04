@@ -3,47 +3,90 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error
-import numpy as np
 
 # 1. Чтение данных
 data = pd.read_csv("student-mat.csv")
 
-# 2. Целевая переменная (столбец для прогнозирования)
+# 2. Целевая переменная
 y = data['G3']
 
-# 3. Выбираем остальные признаки
+# 3. Признаки
 X = data.drop(['G3'], axis=1)
 
-# Разделяем признаки по типу
-num_cols = [cname for cname in X.columns if X[cname].dtype in ['int64', 'float64']]
-
-# Категориальные — те, у кого количество уникальных значений <= 8
-cat_cols = [cname for cname in X.columns
-            if X[cname].dtype == "object"]  # только нечисловые признаки
-
+# Разделение по типам
+num_cols = [c for c in X.columns if X[c].dtype in ['int64', 'float64']]
+cat_cols = [c for c in X.columns if X[c].dtype == 'object']
 
 print(f"Числовые столбцы ({len(num_cols)}): {num_cols}")
 print(f"Категориальные столбцы ({len(cat_cols)}): {cat_cols}")
 
-# 5. Импьютер для числовых данных
-numerical_transformer = SimpleImputer(strategy='mean')
+# 4. Наборы трансформеров
 
-# 6. Конвейер для категориальных столбцов
-categorical_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='most_frequent')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore'))
-])
+# Для числовых
+num_transformers = {
+    "mean": SimpleImputer(strategy="mean"),
+    "median": SimpleImputer(strategy="median"),
+    "scaled_mean": Pipeline([
+        ("imputer", SimpleImputer(strategy="mean")),
+        ("scaler", StandardScaler())
+    ])
+}
+
+# Для категориальных
+cat_transformers = {
+    "freq": Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore"))
+    ]),
+    "constant": Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore"))
+    ])
+}
+
+# 5. Перебор всех комбинаций для выбора лучшего preprocessora
+
+best_score = float("inf")
+best_name = None
+best_preprocessor = None
+
+for num_name, num_trans in num_transformers.items():
+    for cat_name, cat_trans in cat_transformers.items():
+
+        name = f"num:{num_name} + cat:{cat_name}"
+
+        preprocessor = ColumnTransformer([
+            ("num", num_trans, num_cols),
+            ("cat", cat_trans, cat_cols)
+        ])
+
+        model = Pipeline([
+            ("preprocessor", preprocessor),
+            ("model", RandomForestRegressor(random_state=1))
+        ])
+
+        score = -cross_val_score(
+            model, X, y,
+            scoring='neg_mean_absolute_error',
+            cv=5
+        ).mean()
+
+        print(f"{name} → MAE = {score:.3f}")
+
+        if score < best_score:
+            best_score = score
+            best_name = name
+            best_preprocessor = preprocessor
+
+print("\nЛУЧШАЯ КОМБИНАЦИЯ ПРЕПРОЦЕССОРОВ:")
+print(best_name, " → MAE =", round(best_score, 3))
 
 # 7. Препроцессор (объединяем обработчики)
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numerical_transformer, num_cols),
-        ('cat', categorical_transformer, cat_cols)
-    ])
+preprocessor = best_preprocessor
 
 # 8. Итоговый конвейер с RandomForestRegressor
 rf_model = Pipeline(steps=[
@@ -78,5 +121,5 @@ print("Средняя абсолютная ошибка (XGBRegressor):", round(
 # 14. Вывод о сравнении
 print("\nВывод:")
 print("RandomForest — ансамбль деревьев, обученных независимо, хорошо работает при слабых нелинейностях.")
-print("XGBRegressor — использует градиентный бустинг (поочередное улучшение деревьев),")
-print("обычно показывает более высокую точность за счёт учёта ошибок предыдущих моделей.")
+print("XGBRegressor — использует градиентный бустинг, улучшая деревья последовательно.")
+print("Использование лучшего препроцессора — повышает точность обеих моделей.")
